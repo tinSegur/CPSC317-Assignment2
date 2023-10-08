@@ -1,13 +1,9 @@
 package ca.ubc.cs.cs317.dnslookup;
 
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.SocketException;
-import java.net.UnknownHostException;
-import java.util.Collection;
-import java.util.HashSet;
-import java.util.Random;
-import java.util.Set;
+import javax.xml.crypto.Data;
+import java.io.IOException;
+import java.net.*;
+import java.util.*;
 
 public class DNSLookupService {
 
@@ -129,8 +125,44 @@ public class DNSLookupService {
      */
     public Set<ResourceRecord> individualQueryProcess(DNSQuestion question, InetAddress server)
             throws DNSErrorException {
-        /* TODO: To be implemented by the student */
+        Set<ResourceRecord> ret = new HashSet<ResourceRecord>();
+        boolean receivedResponse = false;
+
+        DNSMessage rep = buildQuery(question);
+        DatagramPacket ts = new DatagramPacket(rep.toString().getBytes(), 0, rep.toString().length(), server, 1337);
+        DatagramPacket tr = new DatagramPacket(new byte[MAX_DNS_MESSAGE_LENGTH], MAX_DNS_MESSAGE_LENGTH);
+        for (int i = 0; i<MAX_QUERY_ATTEMPTS; i++){
+            try{
+                verbose.printQueryToSend("UDP", question, server, rep.getID());
+                socket.send(ts);
+                socket.receive(tr);
+                receivedResponse = true;
+                break;
+            } catch (SocketTimeoutException e){
+                continue; //reattempt
+            } catch (IOException e){
+                i--; //reattempt without counting as failed attempt
+                continue;
+            }
+        }
+
+        if (!receivedResponse){
+            return null;
+        }
+
+        DNSMessage rec = new DNSMessage(tr.getData(), tr.getLength());
+        if (rec.getTC()){
+            return TCPQueryProcess(question, server);
+        }
+        Set<ResourceRecord> responseRecords = processResponse(rec);
         return null;
+    }
+
+    /* TCP fallback for truncated queries.
+    * */
+
+    private Set<ResourceRecord> TCPQueryProcess(DNSQuestion question, InetAddress server){
+        return new HashSet<ResourceRecord>();
     }
 
     /**
@@ -144,8 +176,9 @@ public class DNSLookupService {
      * @return The DNSMessage containing the query.
      */
     public DNSMessage buildQuery(DNSQuestion question) {
-
-        return new DNSMessage((short)23);
+        DNSMessage ret = new DNSMessage((short) random.nextInt());
+        ret.addQuestion(question);
+        return ret;
     }
 
     /**
@@ -162,8 +195,25 @@ public class DNSLookupService {
      * @throws DNSErrorException if the Rcode value in the reply header is non-zero
      */
     public Set<ResourceRecord> processResponse(DNSMessage message) throws DNSErrorException {
-        /* TODO: To be implemented by the student */
-        return null;
+        Set<ResourceRecord> ret = new HashSet<ResourceRecord>();
+        switch (message.getRcode()) {
+            case 1 -> throw new DNSErrorException("The server was unable to process the query.");
+            case 2 -> throw new DNSErrorException("There was a problem with the name server");
+            case 4 -> throw new DNSErrorException("The server has not implemented that kind of query");
+            case 5 -> throw new DNSErrorException("The server refused the query");
+        }
+
+        if (!message.getQR()){
+            throw new DNSErrorException("An unexpected response was received.");
+        }
+        verbose.printResponseHeaderInfo(message.getID(), message.getAA(), message.getTC(), message.getRcode());
+        //verbose.printQueryToSend();
+        for (int i = 0; i<message.getANCount(); i++){
+            ResourceRecord rr = message.getRR();
+            verbose.printIndividualResourceRecord(rr, rr.getRecordType().getCode(), rr.getRecordClass().getCode());
+            ret.add(rr);
+        }
+        return ret;
     }
 
     public static class DNSErrorException extends Exception {
