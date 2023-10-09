@@ -3,7 +3,9 @@ package ca.ubc.cs.cs317.dnslookup;
 import javax.xml.crypto.Data;
 import java.io.IOException;
 import java.net.*;
+import java.nio.BufferUnderflowException;
 import java.util.*;
+import java.util.concurrent.TimeoutException;
 
 public class DNSLookupService {
 
@@ -102,7 +104,21 @@ public class DNSLookupService {
     public Collection<ResourceRecord> iterativeQuery(DNSQuestion question)
             throws DNSErrorException {
         Set<ResourceRecord> ans = new HashSet<>();
-        /* TODO: To be implemented by the student */
+
+        if (containsAnswer(cache.getCachedResults(question), question)){
+            return cache.getCachedResults(question);
+        }
+
+        Set<ResourceRecord> receivedRecords;
+        List<ResourceRecord> nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
+        int i = 0;
+        receivedRecords = individualQueryProcess(question, nameServers.get(i).getInetResult());
+        while(!containsAnswer(cache.getCachedResults(question), question)){
+            nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
+            receivedRecords = individualQueryProcess(question, nameServers.get(i).getInetResult());
+        }
+
+        ans = receivedRecords;
         return ans;
     }
 
@@ -125,20 +141,37 @@ public class DNSLookupService {
      */
     public Set<ResourceRecord> individualQueryProcess(DNSQuestion question, InetAddress server)
             throws DNSErrorException {
+        System.out.println(question);
+        System.out.println(server);
         Set<ResourceRecord> ret = new HashSet<ResourceRecord>();
         boolean receivedResponse = false;
 
         DNSMessage rep = buildQuery(question);
-        DatagramPacket ts = new DatagramPacket(rep.toString().getBytes(), 0, rep.toString().length(), server, 1337);
+        DatagramPacket ts = new DatagramPacket(rep.getUsed(), 0, rep.getUsed().length, server, 53);
         DatagramPacket tr = new DatagramPacket(new byte[MAX_DNS_MESSAGE_LENGTH], MAX_DNS_MESSAGE_LENGTH);
+        DNSMessage rec;
+        Set<ResourceRecord> responseRecords = new HashSet<ResourceRecord>();
         for (int i = 0; i<MAX_QUERY_ATTEMPTS; i++){
             try{
                 verbose.printQueryToSend("UDP", question, server, rep.getID());
                 socket.send(ts);
                 socket.receive(tr);
                 receivedResponse = true;
+                rec = new DNSMessage(tr.getData(), tr.getLength());
+                if (rec.getID() != rep.getID()){
+                    i--;
+                    continue;
+                }
+                if (rec.getTC()){
+                    return TCPQueryProcess(question, server);
+                }
+                responseRecords = processResponse(rec);
                 break;
-            } catch (SocketTimeoutException e){
+            }
+            catch (BufferUnderflowException e){
+                e.printStackTrace();
+            }
+            catch (SocketTimeoutException e){
                 continue; //reattempt
             } catch (IOException e){
                 i--; //reattempt without counting as failed attempt
@@ -150,13 +183,9 @@ public class DNSLookupService {
             return null;
         }
 
-        DNSMessage rec = new DNSMessage(tr.getData(), tr.getLength());
-        if (rec.getTC()){
-            return TCPQueryProcess(question, server);
-        }
-        Set<ResourceRecord> responseRecords = processResponse(rec);
-        return null;
+        return responseRecords;
     }
+
 
     /* TCP fallback for truncated queries.
     * */
@@ -197,22 +226,45 @@ public class DNSLookupService {
     public Set<ResourceRecord> processResponse(DNSMessage message) throws DNSErrorException {
         Set<ResourceRecord> ret = new HashSet<ResourceRecord>();
         switch (message.getRcode()) {
-            case 1 -> throw new DNSErrorException("The server was unable to process the query.");
-            case 2 -> throw new DNSErrorException("There was a problem with the name server");
-            case 4 -> throw new DNSErrorException("The server has not implemented that kind of query");
-            case 5 -> throw new DNSErrorException("The server refused the query");
+            case 1 : throw new DNSErrorException("The server was unable to process the query.");
+            case 2 : throw new DNSErrorException("There was a problem with the name server");
+            case 4 : throw new DNSErrorException("The server has not implemented that kind of query");
+            case 5 : throw new DNSErrorException("The server refused the query");
         }
 
         if (!message.getQR()){
-            throw new DNSErrorException("An unexpected response was received.");
+            return ret;
         }
         verbose.printResponseHeaderInfo(message.getID(), message.getAA(), message.getTC(), message.getRcode());
-        //verbose.printQueryToSend();
+
+        for (int i = 0; i<message.getQDCount(); i++){
+            DNSQuestion qq = message.getQuestion();
+        }
+
+        verbose.printAnswersHeader(message.getANCount());
         for (int i = 0; i<message.getANCount(); i++){
             ResourceRecord rr = message.getRR();
+            cache.addResult(rr);
             verbose.printIndividualResourceRecord(rr, rr.getRecordType().getCode(), rr.getRecordClass().getCode());
             ret.add(rr);
         }
+
+        verbose.printNameserversHeader(message.getNSCount());
+        for (int i = 0; i<message.getNSCount(); i++){
+            ResourceRecord rr = message.getRR();
+            cache.addResult(rr);
+            verbose.printIndividualResourceRecord(rr, rr.getRecordType().getCode(), rr.getRecordClass().getCode());
+            ret.add(rr);
+        }
+
+        verbose.printAdditionalInfoHeader(message.getARCount());
+        for (int i = 0; i<message.getARCount(); i++){
+            ResourceRecord rr = message.getRR();
+            cache.addResult(rr);
+            verbose.printIndividualResourceRecord(rr, rr.getRecordType().getCode(), rr.getRecordClass().getCode());
+            ret.add(rr);
+        }
+
         return ret;
     }
 

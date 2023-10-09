@@ -127,4 +127,24 @@ public class DNSLookupServiceTest {
                 Collections.singleton(new ResourceRecord(question, 16482, InetAddress.getByName("103.233.44.22"))),
                 Collections.emptySet(), Collections.emptySet());
     }
+
+    @Test
+    public void testIndividualQuery() throws UnknownHostException, DNSLookupService.DNSErrorException {
+        DNSQuestion question = new DNSQuestion("www.cs.ubc.ca", RecordType.A, RecordClass.IN);
+        try {
+            startServer();
+            List<ResourceRecord> nameservers = cache.getBestNameservers(question);
+            List<ResourceRecord> cachedresults = cache.getCachedResults(question);
+            List<ResourceRecord> aaa = cache.filterByKnownIPAddress(nameservers);
+            System.out.println(aaa);
+            System.out.println(cachedresults);
+            System.out.println(nameservers);
+            System.out.println(nameservers.get(0));
+            System.out.println(nameservers.get(0).getInetResult());
+            System.out.println(service.individualQueryProcess(question, aaa.get(0).getInetResult()));
+        }
+        catch (SocketException e){
+            e.printStackTrace();
+        }
+    }
 }
