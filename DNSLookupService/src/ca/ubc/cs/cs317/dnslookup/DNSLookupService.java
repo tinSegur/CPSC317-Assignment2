@@ -108,6 +108,12 @@ public class DNSLookupService {
             return cache.getCachedResults(question);
         }
 
+        for (ResourceRecord rr : cache.getCachedResults(question)){
+            if (rr.getRecordType() == RecordType.CNAME){
+                return cache.getCachedResults(question);
+            }
+        }
+
         Set<ResourceRecord> receivedRecords;
         List<ResourceRecord> nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
         if (nameServers.isEmpty()){
@@ -130,16 +136,18 @@ public class DNSLookupService {
                     case CNAME : CNRecords.add(rr);
                 }
             }
-            if (containsAnswer(CNRecords, new DNSQuestion(question.getHostName(), RecordType.CNAME, question.getRecordClass()))){
-                getResultsFollowingCNames(question, MAX_INDIRECTION_LEVEL_NS);
-            }
             nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
             if (nameServers.isEmpty()){
-                DNSQuestion NSQuestion = new DNSQuestion(NSRecords.remove(0).getHostName(), RecordType.A, RecordClass.IN);
+                DNSQuestion NSQuestion = new DNSQuestion(NSRecords.remove(0).getTextResult(), RecordType.A, RecordClass.IN);
                 iterativeQuery(NSQuestion);
                 nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
             }
             receivedRecords = individualQueryProcess(question, nameServers.get(0).getInetResult());
+            for (ResourceRecord rr : receivedRecords){
+                if (rr.getRecordType() == RecordType.CNAME){
+                    return getResultsFollowingCNames(new DNSQuestion(rr.getTextResult(), RecordType.A, RecordClass.IN), MAX_INDIRECTION_LEVEL_NS);
+                }
+            }
         }
         Set<ResourceRecord> ans = new HashSet<>(cache.getCachedResults(question));
         return ans;
@@ -181,7 +189,11 @@ public class DNSLookupService {
                 rec = new DNSMessage(tr.getData(), tr.getLength());
                 if (rec.getID() != rep.getID()){
                     socket.receive(tr);
-                    continue;
+                    rec = new DNSMessage(tr.getData(), tr.getLength());
+                }
+                if (!rec.getQR()){
+                    socket.receive(tr);
+                    rec = new DNSMessage(tr.getData(), tr.getLength());
                 }
                 if (rec.getTC()){
                     return TCPQueryProcess(question, server);
