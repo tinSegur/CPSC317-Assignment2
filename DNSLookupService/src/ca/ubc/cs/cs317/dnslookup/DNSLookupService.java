@@ -103,7 +103,6 @@ public class DNSLookupService {
      */
     public Collection<ResourceRecord> iterativeQuery(DNSQuestion question)
             throws DNSErrorException {
-        Set<ResourceRecord> ans = new HashSet<>();
 
         if (containsAnswer(cache.getCachedResults(question), question)){
             return cache.getCachedResults(question);
@@ -111,14 +110,38 @@ public class DNSLookupService {
 
         Set<ResourceRecord> receivedRecords;
         List<ResourceRecord> nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
-        int i = 0;
-        receivedRecords = individualQueryProcess(question, nameServers.get(i).getInetResult());
-        while(!containsAnswer(cache.getCachedResults(question), question)){
+        if (nameServers.isEmpty()){
+            List<ResourceRecord> NSs = cache.getBestNameservers(question);
+            String NStoquery = NSs.get(random.nextInt(NSs.size())).getTextResult();
+            DNSQuestion NSQuestion = new DNSQuestion(NStoquery.substring(NStoquery.indexOf('.')+1), RecordType.A, RecordClass.IN);
+            iterativeQuery(NSQuestion);
             nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
-            receivedRecords = individualQueryProcess(question, nameServers.get(i).getInetResult());
         }
+        List<ResourceRecord> NSRecords;
+        List<ResourceRecord> CNRecords;
+        receivedRecords = individualQueryProcess(question, nameServers.get(0).getInetResult());
+        while(!containsAnswer(cache.getCachedResults(question), question)){
 
-        ans = receivedRecords;
+            NSRecords = new ArrayList<ResourceRecord>();
+            CNRecords = new ArrayList<ResourceRecord>();
+            for (ResourceRecord rr : receivedRecords){
+                switch (rr.getRecordType()){
+                    case NS : NSRecords.add(rr);
+                    case CNAME : CNRecords.add(rr);
+                }
+            }
+            if (containsAnswer(CNRecords, new DNSQuestion(question.getHostName(), RecordType.CNAME, question.getRecordClass()))){
+                getResultsFollowingCNames(question, MAX_INDIRECTION_LEVEL_NS);
+            }
+            nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
+            if (nameServers.isEmpty()){
+                DNSQuestion NSQuestion = new DNSQuestion(NSRecords.remove(0).getHostName(), RecordType.A, RecordClass.IN);
+                iterativeQuery(NSQuestion);
+                nameServers = cache.filterByKnownIPAddress(cache.getBestNameservers(question));
+            }
+            receivedRecords = individualQueryProcess(question, nameServers.get(0).getInetResult());
+        }
+        Set<ResourceRecord> ans = new HashSet<>(cache.getCachedResults(question));
         return ans;
     }
 
@@ -141,13 +164,11 @@ public class DNSLookupService {
      */
     public Set<ResourceRecord> individualQueryProcess(DNSQuestion question, InetAddress server)
             throws DNSErrorException {
-        System.out.println(question);
-        System.out.println(server);
         Set<ResourceRecord> ret = new HashSet<ResourceRecord>();
         boolean receivedResponse = false;
 
         DNSMessage rep = buildQuery(question);
-        DatagramPacket ts = new DatagramPacket(rep.getUsed(), 0, rep.getUsed().length, server, 53);
+        DatagramPacket ts = new DatagramPacket(rep.getUsed(), 0, rep.getUsed().length, server, DEFAULT_DNS_PORT);
         DatagramPacket tr = new DatagramPacket(new byte[MAX_DNS_MESSAGE_LENGTH], MAX_DNS_MESSAGE_LENGTH);
         DNSMessage rec;
         Set<ResourceRecord> responseRecords = new HashSet<ResourceRecord>();
@@ -159,7 +180,7 @@ public class DNSLookupService {
                 receivedResponse = true;
                 rec = new DNSMessage(tr.getData(), tr.getLength());
                 if (rec.getID() != rep.getID()){
-                    i--;
+                    socket.receive(tr);
                     continue;
                 }
                 if (rec.getTC()){
@@ -187,10 +208,12 @@ public class DNSLookupService {
     }
 
 
-    /* TCP fallback for truncated queries.
+    /**
+     * TCP fallback for truncated queries.
     * */
 
     private Set<ResourceRecord> TCPQueryProcess(DNSQuestion question, InetAddress server){
+
         return new HashSet<ResourceRecord>();
     }
 
@@ -225,11 +248,8 @@ public class DNSLookupService {
      */
     public Set<ResourceRecord> processResponse(DNSMessage message) throws DNSErrorException {
         Set<ResourceRecord> ret = new HashSet<ResourceRecord>();
-        switch (message.getRcode()) {
-            case 1 : throw new DNSErrorException("The server was unable to process the query.");
-            case 2 : throw new DNSErrorException("There was a problem with the name server");
-            case 4 : throw new DNSErrorException("The server has not implemented that kind of query");
-            case 5 : throw new DNSErrorException("The server refused the query");
+        if (message.getRcode() != 0){
+            throw new DNSErrorException(DNSMessage.dnsErrorMessage(message.getRcode()));
         }
 
         if (!message.getQR()){
